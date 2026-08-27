@@ -1,8 +1,25 @@
 import base64
+import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+from app.database import SessionLocal
+from app.models import Address, AddressType
 
 
 BASE = "/api/v1/contacts"
 PHOTO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JZJwAAAAASUVORK5CYII="
+
+
+def _address(address_type: str, street: str) -> dict:
+    return {
+        "type": address_type,
+        "address": street,
+        "city": "San Francisco",
+        "state": "CA",
+        "postal_code": "94105",
+        "country": "USA",
+    }
 
 
 def test_health(client):
@@ -21,6 +38,7 @@ def test_create_contact(client, payload):
     assert body["email"] == "ada@example.com"
     assert body["full_name"] == "Ada Lovelace"
     assert body["created_at"] and body["updated_at"]
+    assert body["addresses"] == []
 
 
 def test_create_contact_with_photo(client, payload):
@@ -52,6 +70,31 @@ def test_create_requires_valid_email(client, payload):
 
 def test_create_requires_names(client, payload):
     response = client.post(BASE, json={**payload, "first_name": ""})
+    assert response.status_code == 422
+
+
+def test_create_serializes_multiple_normalized_addresses(client, payload):
+    response = client.post(
+        BASE,
+        json={
+            **payload,
+            "addresses": [
+                _address("Home", "1 Market St"),
+                _address("Work", "2 Mission St"),
+            ],
+        },
+    )
+    assert response.status_code == 201
+    addresses = response.json()["addresses"]
+    assert [(address["type"], address["address"]) for address in addresses] == [
+        ("Home", "1 Market St"),
+        ("Work", "2 Mission St"),
+    ]
+    assert all(address["id"] > 0 for address in addresses)
+
+
+def test_address_type_is_limited_to_home_work_or_other(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [_address("Vacation", "1 Market St")]})
     assert response.status_code == 422
 
 
@@ -88,7 +131,13 @@ def test_list_search(client, payload):
     client.post(BASE, json=payload)
     client.post(
         BASE,
-        json={**payload, "first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com", "company": "US Navy"},
+        json={
+            **payload,
+            "first_name": "Grace",
+            "last_name": "Hopper",
+            "email": "grace@example.com",
+            "company": "US Navy",
+        },
     )
 
     hits = client.get(BASE, params={"search": "hopper"}).json()
@@ -118,13 +167,38 @@ def test_list_rejects_bad_sort_field(client):
 
 
 def test_patch_updates_only_sent_fields(client, payload):
-    contact_id = client.post(BASE, json=payload).json()["id"]
+    contact_id = client.post(
+        BASE, json={**payload, "addresses": [_address("Home", "1 Market St")]}
+    ).json()["id"]
     response = client.patch(f"{BASE}/{contact_id}", json={"phone": "+1-000-000-0000"})
     assert response.status_code == 200
     body = response.json()
     assert body["phone"] == "+1-000-000-0000"
     assert body["first_name"] == "Ada"
     assert body["company"] == "Analytical Engines"
+    assert [address["address"] for address in body["addresses"]] == ["1 Market St"]
+
+
+def test_patch_replaces_addresses_only_when_the_collection_is_sent(client, payload):
+    contact_id = client.post(
+        BASE,
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": payload["email"],
+            "addresses": [_address("Home", "1 Market St")],
+        },
+    ).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": [_address("Other", "PO Box 1")]})
+    assert response.status_code == 200
+    assert [(address["type"], address["address"]) for address in response.json()["addresses"]] == [
+        ("Other", "PO Box 1")
+    ]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
 
 
 def test_patch_duplicate_email_conflicts(client, payload):
@@ -141,15 +215,81 @@ def test_patch_same_email_is_allowed(client, payload):
 
 
 def test_put_replaces_contact(client, payload):
-    contact_id = client.post(BASE, json=payload).json()["id"]
+    contact_id = client.post(
+        BASE,
+        json={**payload, "addresses": [_address("Home", "1 Market St"), _address("Work", "2 Mission St")]},
+    ).json()["id"]
     response = client.put(
         f"{BASE}/{contact_id}",
-        json={"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"},
+        json={
+            "first_name": "Grace",
+            "last_name": "Hopper",
+            "email": "grace@example.com",
+            "addresses": [_address("Work", "3 Howard St")],
+        },
     )
     assert response.status_code == 200
     body = response.json()
     assert body["full_name"] == "Grace Hopper"
     assert body["company"] is None  # omitted fields are cleared by PUT
+    assert [(address["type"], address["address"]) for address in body["addresses"]] == [
+        ("Work", "3 Howard St")
+    ]
+
+
+def test_put_without_addresses_removes_existing_addresses(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [_address("Home", "1 Market St")]}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_addresses_are_isolated_between_contacts(client, payload):
+    ada_id = client.post(BASE, json={**payload, "addresses": [_address("Home", "1 Market St")]}).json()["id"]
+    grace_id = client.post(
+        BASE,
+        json={
+            **payload,
+            "first_name": "Grace",
+            "last_name": "Hopper",
+            "email": "grace@example.com",
+            "addresses": [_address("Work", "2 Mission St")],
+        },
+    ).json()["id"]
+
+    assert client.patch(f"{BASE}/{ada_id}", json={"addresses": [_address("Other", "PO Box 1")]}).status_code == 200
+    grace_addresses = client.get(f"{BASE}/{grace_id}").json()["addresses"]
+    assert [(address["type"], address["address"]) for address in grace_addresses] == [("Work", "2 Mission St")]
+
+
+def test_address_rows_are_owned_by_the_contact_and_cascade_on_delete(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [_address("Home", "1 Market St")]}).json()["id"]
+
+    with SessionLocal() as db:
+        addresses = db.scalars(select(Address).where(Address.contact_id == contact_id)).all()
+        assert len(addresses) == 1
+        assert addresses[0].contact_id == contact_id
+
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    with SessionLocal() as db:
+        assert db.scalars(select(Address).where(Address.contact_id == contact_id)).all() == []
+
+
+def test_database_rejects_an_orphan_address(client):
+    with SessionLocal() as db:
+        db.add(
+            Address(
+                contact_id=9999,
+                type=AddressType.HOME,
+                address="1 Market St",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
 
 
 def test_edits_preserve_omitted_photo_and_allow_explicit_clear(client, payload):

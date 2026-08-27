@@ -1,8 +1,8 @@
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Contact
-from app.schemas import ContactCreate, ContactReplace, ContactUpdate
+from app.models import Address, Contact
+from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
 
@@ -12,7 +12,8 @@ def _normalize_email(email: str) -> str:
 
 
 def get_contact(db: Session, contact_id: int) -> Contact | None:
-    return db.get(Contact, contact_id)
+    stmt = select(Contact).options(selectinload(Contact.addresses)).where(Contact.id == contact_id)
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_contact_by_email(db: Session, email: str) -> Contact | None:
@@ -55,14 +56,23 @@ def list_contacts(
     column = getattr(Contact, sort_by)
     stmt = stmt.order_by(column.desc() if order == "desc" else column.asc())
 
-    items = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
+    items = db.execute(stmt.options(selectinload(Contact.addresses)).limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 
+def _new_addresses(addresses: list[AddressCreate]) -> list[Address]:
+    return [Address(**address.model_dump()) for address in addresses]
+
+
+def _replace_addresses(contact: Contact, addresses: list[AddressCreate]) -> None:
+    """Replace a contact's complete address collection in the active transaction."""
+    contact.addresses = _new_addresses(addresses)
+
+
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
-    data = payload.model_dump()
+    data = payload.model_dump(exclude={"addresses"})
     data["email"] = _normalize_email(data["email"])
-    contact = Contact(**data)
+    contact = Contact(**data, addresses=_new_addresses(payload.addresses))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -70,21 +80,27 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
-    for field, value in payload.model_dump().items():
+    data = payload.model_dump(exclude={"addresses"})
+    for field, value in data.items():
         # Photo uploads can be large and contact-edit forms commonly omit their
         # existing value. Unlike the other optional PUT fields, leave it intact
         # unless the client explicitly sends a replacement or null.
         if field == "photo" and field not in payload.model_fields_set:
             continue
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    _replace_addresses(contact, payload.addresses)
     db.commit()
     db.refresh(contact)
     return contact
 
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude={"addresses"}, exclude_unset=True)
+    addresses = payload.addresses if "addresses" in payload.model_fields_set else None
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    if addresses is not None:
+        _replace_addresses(contact, addresses)
     db.commit()
     db.refresh(contact)
     return contact
