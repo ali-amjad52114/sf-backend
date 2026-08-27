@@ -124,6 +124,13 @@ of it. `PATCH` leaves addresses unchanged when the field is omitted, and
 replaces the full collection when it is supplied (send `[]` to remove all
 addresses).
 
+### Existing persistent databases
+
+This event build does not include a schema/data-migration runner. Before
+upgrading an existing persistent database, migrate legacy contact address
+columns into the normalized `addresses` table; new in-memory deployments need
+no migration step.
+
 `photo` is an optional `data:image/...;base64,...` value. JPEG, PNG, GIF, and
 WebP are accepted, with a 5 MiB decoded-size limit. `PUT` retains an omitted
 photo to avoid removing it during an ordinary edit; send `"photo": null` to
