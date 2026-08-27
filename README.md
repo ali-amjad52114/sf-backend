@@ -108,8 +108,13 @@ also read):
 
 ```
 first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes
+address, city, state, postal_code, country, notes, photo
 ```
+
+`photo` is an optional `data:image/...;base64,...` value. JPEG, PNG, GIF, and
+WebP are accepted, with a 5 MiB decoded-size limit. `PUT` retains an omitted
+photo to avoid removing it during an ordinary edit; send `"photo": null` to
+clear it.
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
 
