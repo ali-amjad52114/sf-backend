@@ -71,6 +71,11 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
     for field, value in payload.model_dump().items():
+        # Photo uploads can be large and contact-edit forms commonly omit their
+        # existing value. Unlike the other optional PUT fields, leave it intact
+        # unless the client explicitly sends a replacement or null.
+        if field == "photo" and field not in payload.model_fields_set:
+            continue
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
     db.commit()
     db.refresh(contact)

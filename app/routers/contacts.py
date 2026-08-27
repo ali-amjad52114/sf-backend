@@ -138,7 +138,9 @@ def replace_contact(
     Replace every field of an existing contact.
 
     This is a true `PUT`: optional fields you leave out of the body are cleared
-    to `null`. To change a subset of fields, use `PATCH` instead.
+    to `null`, except an omitted `photo` is retained so ordinary contact edits
+    do not discard it. Send `"photo": null` to clear the photo. To change a
+    subset of fields, use `PATCH` instead.
     """
     contact = _get_or_404(db, contact_id)
     _reject_duplicate_email(db, payload.email, exclude_id=contact_id)

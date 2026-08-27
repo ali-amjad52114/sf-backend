@@ -1,4 +1,8 @@
+import base64
+
+
 BASE = "/api/v1/contacts"
+PHOTO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JZJwAAAAASUVORK5CYII="
 
 
 def test_health(client):
@@ -17,6 +21,28 @@ def test_create_contact(client, payload):
     assert body["email"] == "ada@example.com"
     assert body["full_name"] == "Ada Lovelace"
     assert body["created_at"] and body["updated_at"]
+
+
+def test_create_contact_with_photo(client, payload):
+    response = client.post(BASE, json={**payload, "photo": PHOTO})
+
+    assert response.status_code == 201
+    assert response.json()["photo"] == PHOTO
+
+
+def test_create_rejects_unsafe_photo_data(client, payload):
+    too_large_photo = "data:image/png;base64," + base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"x" * (5 * 1024 * 1024)
+    ).decode()
+
+    for photo in (
+        "data:text/html;base64,PGgxPkhlbGxvPC9oMT4=",
+        "data:image/png;base64,not-valid-base64!",
+        f"data:image/jpeg;base64,{PHOTO.removeprefix('data:image/png;base64,')}",
+        too_large_photo,
+    ):
+        response = client.post(BASE, json={**payload, "photo": photo})
+        assert response.status_code == 422
 
 
 def test_create_requires_valid_email(client, payload):
@@ -124,6 +150,34 @@ def test_put_replaces_contact(client, payload):
     body = response.json()
     assert body["full_name"] == "Grace Hopper"
     assert body["company"] is None  # omitted fields are cleared by PUT
+
+
+def test_edits_preserve_omitted_photo_and_allow_explicit_clear(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PHOTO}).json()["id"]
+
+    put = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Byron", "email": payload["email"]},
+    )
+    assert put.status_code == 200
+    assert put.json()["photo"] == PHOTO
+
+    patch = client.patch(f"{BASE}/{contact_id}", json={"notes": "Edited without replacing photo."})
+    assert patch.status_code == 200
+    assert patch.json()["photo"] == PHOTO
+    assert client.get(f"{BASE}/{contact_id}").json()["photo"] == PHOTO
+
+    clear = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            "first_name": "Ada",
+            "last_name": "Byron",
+            "email": payload["email"],
+            "photo": None,
+        },
+    )
+    assert clear.status_code == 200
+    assert clear.json()["photo"] is None
 
 
 def test_put_missing_contact_returns_404(client):

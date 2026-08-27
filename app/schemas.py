@@ -1,6 +1,57 @@
+import base64
+import binascii
+import re
 from datetime import datetime, timezone
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+MAX_PHOTO_DATA_URI_LENGTH = len("data:image/jpeg;base64,") + 4 * ((MAX_PHOTO_BYTES + 2) // 3)
+_PHOTO_DATA_URI_RE = re.compile(
+    r"data:(?P<mime>image/(?:gif|jpeg|png|webp));base64,(?P<data>[A-Za-z0-9+/]*={0,2})"
+)
+_PHOTO_SIGNATURES = {
+    "image/jpeg": lambda data: data.startswith(b"\xff\xd8\xff"),
+    "image/png": lambda data: data.startswith(b"\x89PNG\r\n\x1a\n"),
+    "image/gif": lambda data: data.startswith((b"GIF87a", b"GIF89a")),
+    "image/webp": lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
+}
+
+PhotoData = Annotated[
+    str | None,
+    Field(
+        default=None,
+        max_length=MAX_PHOTO_DATA_URI_LENGTH,
+        description=(
+            "Optional base64 image data URI. Only JPEG, PNG, GIF, and WebP are accepted; "
+            "the decoded image must be at most 5 MiB. Send `null` to remove the photo."
+        ),
+    ),
+]
+
+
+def _validate_photo(value: str | None) -> str | None:
+    if value is None:
+        return value
+
+    match = _PHOTO_DATA_URI_RE.fullmatch(value)
+    if match is None:
+        raise ValueError("photo must be a base64 data URI for a supported image type")
+
+    try:
+        data = base64.b64decode(match["data"], validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("photo must contain valid base64 data") from None
+
+    if not data:
+        raise ValueError("photo must not be empty")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise ValueError("photo must not exceed 5 MiB when decoded")
+    if not _PHOTO_SIGNATURES[match["mime"]](data):
+        raise ValueError("photo data does not match its declared image type")
+    return value
 
 
 class ContactBase(BaseModel):
@@ -69,6 +120,12 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: PhotoData = None
+
+    @field_validator("photo")
+    @classmethod
+    def _validate_contact_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 _FULL_EXAMPLE = {
@@ -98,8 +155,9 @@ class ContactReplace(ContactBase):
     """
     Body of `PUT /api/v1/contacts/{contact_id}`.
 
-    This is a full replacement: any optional field you omit is set back to `null`.
-    Use `PATCH` if you only want to change some fields.
+    This is a full replacement: any optional field you omit is set back to `null`,
+    except `photo`, which is retained unless explicitly included. Use `PATCH` if
+    you only want to change some fields.
     """
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE]})
@@ -134,6 +192,12 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: PhotoData = None
+
+    @field_validator("photo")
+    @classmethod
+    def _validate_contact_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 class ContactRead(ContactBase):
