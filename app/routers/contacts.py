@@ -137,10 +137,11 @@ def replace_contact(
     """
     Replace every field of an existing contact.
 
-    This is a true `PUT`: optional fields you leave out of the body are cleared
-    to `null`, except an omitted `photo` is retained so ordinary contact edits
-    do not discard it. Send `"photo": null` to clear the photo. To change a
-    subset of fields, use `PATCH` instead.
+    This is a true `PUT`: optional scalar fields you leave out of the body are
+    cleared to `null`, and the submitted address collection replaces every
+    stored address (an omitted collection is therefore empty). An omitted
+    `photo` is retained; send `"photo": null` to clear it. To change a subset
+    of fields, use `PATCH` instead.
     """
     contact = _get_or_404(db, contact_id)
     _reject_duplicate_email(db, payload.email, exclude_id=contact_id)
@@ -163,9 +164,11 @@ def update_contact(
     """
     Update only the fields present in the request body.
 
-    Fields you omit keep their current value. Re-sending a contact's own email
-    address is allowed; using an email that belongs to a different contact
-    returns `409 Conflict`.
+    Fields you omit keep their current value. When `addresses` is supplied, its
+    complete list replaces the stored address collection; omit it to leave all
+    addresses unchanged, or send `[]` to remove them. Re-sending a contact's
+    own email address is allowed; using an email that belongs to a different
+    contact returns `409 Conflict`.
     """
     contact = _get_or_404(db, contact_id)
     if payload.email is not None:

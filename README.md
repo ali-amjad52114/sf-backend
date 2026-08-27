@@ -104,19 +104,30 @@ also read):
 ### Contact fields
 
 `first_name` and `last_name` are required; `email` is required and unique
-(case-insensitive). Everything else is optional.
+(case-insensitive). Everything else is optional. Addresses are a separate
+one-to-many resource: each item in a contact's `addresses` list is stored in
+the `addresses` table with a `contact_id` foreign key, not in a JSON blob or
+extra columns on `contacts`.
 
 ```
 first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes, photo
+addresses, notes, photo
 ```
+
+Each address has an `id`, a required `type` of `Home`, `Work`, or `Other`, a
+required `address` (street line), and optional `city`, `state`, `postal_code`,
+and `country` fields. Responses add `id`, `full_name`, `created_at`, and
+`updated_at` (UTC) to the contact.
+
+`PUT` replaces the entire address collection; omitting `addresses` removes all
+of it. `PATCH` leaves addresses unchanged when the field is omitted, and
+replaces the full collection when it is supplied (send `[]` to remove all
+addresses).
 
 `photo` is an optional `data:image/...;base64,...` value. JPEG, PNG, GIF, and
 WebP are accepted, with a 5 MiB decoded-size limit. `PUT` retains an omitted
 photo to avoid removing it during an ordinary edit; send `"photo": null` to
 clear it.
-
-Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
 
 ### List query parameters
 
@@ -146,7 +157,8 @@ List responses are wrapped so clients can paginate:
 curl -X POST http://127.0.0.1:8000/api/v1/contacts \
   -H 'content-type: application/json' \
   -d '{"first_name":"Katherine","last_name":"Johnson","email":"katherine@example.com",
-       "phone":"+1-757-555-0199","company":"NASA","job_title":"Mathematician"}'
+       "phone":"+1-757-555-0199","company":"NASA","job_title":"Mathematician",
+       "addresses":[{"type":"Work","address":"1 NASA Pkwy","city":"Houston","state":"TX","postal_code":"77058","country":"USA"}]}'
 
 # Search + paginate
 curl "http://127.0.0.1:8000/api/v1/contacts?search=nasa&limit=10&sort_by=last_name"
@@ -175,7 +187,7 @@ app/
   main.py             FastAPI app, lifespan startup, /health and /
   config.py           Environment-driven settings
   database.py         Engine, session factory, StaticPool in-memory wiring
-  models.py           Contact ORM model
+  models.py           Contact and normalized Address ORM models
   schemas.py          Pydantic request/response models
   crud.py             Database operations (search, sort, paginate)
   seed.py             Sample contacts for the in-memory default

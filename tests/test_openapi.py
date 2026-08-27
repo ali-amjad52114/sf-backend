@@ -134,6 +134,14 @@ def test_contact_fields_are_described_and_have_examples(spec):
     assert schema["properties"]["full_name"]["description"]
 
 
+def test_normalized_address_schemas_are_documented(spec):
+    schemas = spec["components"]["schemas"]
+    assert schemas["AddressType"]["enum"] == ["Home", "Work", "Other"]
+    assert set(schemas["AddressCreate"]["required"]) == {"type", "address"}
+    assert schemas["ContactRead"]["properties"]["addresses"]["items"]["$ref"].endswith("/AddressRead")
+    assert "Replacement address collection" in schemas["ContactUpdate"]["properties"]["addresses"]["description"]
+
+
 def test_request_bodies_carry_examples(spec):
     create = spec["components"]["schemas"]["ContactCreate"]
     assert len(create["examples"]) == 2
